@@ -1,40 +1,75 @@
-# Import necessary modules from Flask and other packages
+# Import necessary modules from Flask, Celery, and other packages
 from flask import Flask, request  # Flask for creating the web application, request to handle incoming requests
-from tasks import send_mail, log_message  # Custom tasks for sending emails and logging messages
-import logging  # Python's logging module for logging messages
+from celery import Celery  # Celery for background task processing
+import smtplib  # SMTP library for sending emails
+from email.mime.text import MIMEText  # Library for creating email messages
+import logging  # Logging library for recording log messages
+from datetime import datetime  # DateTime library for handling dates and times
+import os  # OS library for handling file and directory operations
 
-# Initialize the Flask application
+# Create the Flask app
 app = Flask(__name__)
 
-# Set up logging configuration
-# Log messages will be saved to /var/log/messaging_system.log with INFO level and above
-logging.basicConfig(filename='/var/log/messaging_system.log', level=logging.INFO)
+# Create the Celery app with RabbitMQ as the broker
+# The broker URL is specified; update this if needed
+celery = Celery(app.name, broker='pyamqp://guest:guest@localhost//')
 
-# Define a route for the root URL ('/')
+# Ensure the log directory exists and configure logging
+log_dir = '/var/log'
+os.makedirs(log_dir, exist_ok=True)  # Create the log directory if it doesn't exist
+log_path = os.path.join(log_dir, 'messaging_system.log')  # Define the path to the log file
+logging.basicConfig(filename=log_path, level=logging.INFO)  # Configure logging to write to the log file
+
+# Set sensitive information directly
+SENDER_EMAIL = 'fortismanuel@gmail.com'  # Sender's email address
+SENDER_PASSWORD = 'evoddpabuclykxye'  # Sender's email password (use environment variables for security in production)
+
+# Define a Celery task to send an email
+@celery.task
+def send_email(recipient):
+    sender = SENDER_EMAIL
+    password = SENDER_PASSWORD
+    subject = "Test Email"
+    body = "This is a test email sent from the messaging system by HNGDevOps."
+    
+    # Create the email message
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = recipient
+    
+    # Send the email using SMTP with SSL
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp_server:
+        smtp_server.login(sender, password)  # Login to the SMTP server
+        smtp_server.sendmail(sender, recipient, msg.as_string())  # Send the email
+        # Log the email sending event with a timestamp
+        logging.info(f"Email sent to {recipient} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Define a Celery task to log the current time
+@celery.task
+def log_current_time():
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Get the current time
+    logging.info(f"Talktome request received at {current_time}")  # Log the time of the "talktome" request
+
+# Define the main route for the Flask app
 @app.route('/')
-def index():
-    # Get 'sendmail' and 'talktome' parameters from the request URL
-    sendmail = request.args.get('sendmail')
-    talktome = request.args.get('talktome')
+def handle_request():
+    # Check if 'sendmail' parameter is in the request URL
+    if 'sendmail' in request.args:
+        recipient = request.args.get('sendmail')  # Get the recipient email from the request
+        send_email.delay(recipient)  # Queue the send_email task using Celery
+        return f"Email queued for sending to {recipient}"  # Return a response to the client
     
-    # If 'sendmail' parameter is present in the request
-    if sendmail:
-        # Queue the task of sending an email using Celery (asynchronously)
-        send_mail.delay(sendmail)
-        # Return a message indicating that the email has been queued
-        return f"Email to {sendmail} queued."
+    # Check if 'talktome' parameter is in the request URL
+    elif 'talktome' in request.args:
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Get the current time
+        log_current_time.delay()  # Queue the log_current_time task using Celery
+        return f"Current time logged: {current_time}"  # Return a response to the client
     
-    # If 'talktome' parameter is present in the request
-    if talktome:
-        # Queue the task of logging a message using Celery (asynchronously)
-        log_message.delay()
-        # Return a message indicating that the message has been logged
-        return "Message logged."
+    # If neither parameter is present, return an invalid request response
+    else:
+        return "Invalid request. Use ?sendmail or ?talktome parameter."
 
-    # If neither parameter is present, return a default message
-    return "Hello, use ?sendmail=<email> or ?talktome"
-
-# Run the Flask application
-# The app will run in debug mode, which is useful for development as it provides detailed error messages
+# Run the Flask app in debug mode
 if __name__ == '__main__':
     app.run(debug=True)
